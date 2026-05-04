@@ -225,6 +225,15 @@ const firebaseConfig = {
 firebase.initializeApp(firebaseConfig);
 const db = firebase.database();
 
+// ── CRITICAL: Firebase converts arrays to objects, this fixes it ──
+function arr(v){
+  if(!v) return [];
+  if(Array.isArray(v)) return v;
+  // Firebase turned array into object with numeric keys
+  return Object.keys(v).sort((a,b)=>Number(a)-Number(b)).map(k=>v[k]);
+}
+function obj(v){return v&&typeof v==='object'?v:{};}
+
 const SUITS=['♠','♥','♦','♣'];
 const RANKS=['2','3','4','5','6','7','8','9','10','J','Q','K','A'];
 const RV={2:2,3:3,4:4,5:5,6:6,7:7,8:8,9:9,10:10,J:11,Q:12,K:13,A:14};
@@ -238,12 +247,10 @@ let myId='p_'+Math.random().toString(36).slice(2,9);
 let tableId=null,isHost=false,tableRef=null,myName='',lastHash='';
 let actionLock=false;
 
-// ── DECK ──
 function buildDeck(){let d=[];for(let s of SUITS)for(let r of RANKS)d.push({r,s});return d;}
 function shuffle(d){for(let i=d.length-1;i>0;i--){let j=Math.floor(Math.random()*(i+1));[d[i],d[j]]=[d[j],d[i]];}return d;}
 function isRed(s){return s==='♥'||s==='♦';}
 
-// ── HAND EVAL ──
 function evalHand(cards){
   if(!cards||cards.length<2)return{rank:-1,name:'',k:[]};
   const vals=cards.map(c=>RV[c.r]).sort((a,b)=>b-a);
@@ -260,7 +267,7 @@ function evalHand(cards){
   }
   const st=cards.length>=5?straight(vals):0;
   if(flush&&st){if(st===14)return{rank:8,name:'Royal Flush',k:[14]};return{rank:8,name:'Straight Flush',k:[st]};}
-  if(grp[0][1]===4)return{rank:7,name:'Four of a Kind',k:[+grp[0][0],+(grp[1]||[0])[0]]};
+  if(grp[0][1]===4)return{rank:7,name:'Four of a Kind',k:[+grp[0][0],+(grp[1]||['0'])[0]]};
   if(grp[0][1]===3&&grp[1]&&grp[1][1]>=2)return{rank:6,name:'Full House',k:[+grp[0][0],+grp[1][0]]};
   if(flush)return{rank:5,name:'Flush',k:uniq.slice(0,5)};
   if(st)return{rank:4,name:'Straight',k:[st]};
@@ -269,8 +276,9 @@ function evalHand(cards){
   if(grp[0][1]===2)return{rank:1,name:'One Pair',k:[+grp[0][0],...uniq.filter(v=>v!=+grp[0][0]).slice(0,3)]};
   return{rank:0,name:'High Card',k:uniq.slice(0,5)};
 }
+
 function bestHand(hole,comm){
-  const all=[...(hole||[]),...(comm||[])];
+  const all=[...arr(hole),...arr(comm)];
   if(all.length<5)return evalHand(all);
   let best=null;
   for(let i=0;i<all.length;i++)for(let j=i+1;j<all.length;j++)for(let k=j+1;k<all.length;k++)for(let l=k+1;l<all.length;l++)for(let m=l+1;m<all.length;m++){
@@ -282,10 +290,8 @@ function bestHand(hole,comm){
 function cmpK(a,b){for(let i=0;i<Math.min(a.length,b.length);i++){if(a[i]>b[i])return 1;if(a[i]<b[i])return -1;}return 0;}
 function cmpHands(a,b){if(a.rank!==b.rank)return a.rank>b.rank?1:-1;return cmpK(a.k,b.k);}
 
-// ── FIREBASE ──
 async function tableGet(){const s=await tableRef.get();return s.val();}
 
-// ── LOBBY ──
 function genCode(){return Math.random().toString(36).slice(2,7).toUpperCase();}
 
 async function createTable(){
@@ -322,10 +328,10 @@ async function joinTable(){
   if(!state){toast('Table not found');return;}
   if(state.phase!=='lobby'){toast('Game already started');return;}
   if(state.players&&state.players.length>=state.maxPlayers){toast('Table is full');return;}
-  const seat=state.players?state.players.length:0;
+  const seat=arr(state.players).length;
   const newPlayer={id:myId,name:myName,chips:state.startChips,seat,color:COLORS[seat%8]};
-  const players=[...(state.players||[]),newPlayer];
-  await tableRef.update({players,log:[...(state.log||[]),myName+' joined']});
+  const players=[...arr(state.players),newPlayer];
+  await tableRef.update({players,log:[...arr(state.log),myName+' joined']});
   listenToTable();
   showWaitingRoom(state);
 }
@@ -338,10 +344,10 @@ function listenToTable(){
       phase:state.phase,pot:state.pot,
       currentSeat:state.currentSeat,
       handNum:state.handNum,
-      pcount:state.players?.length,
+      pcount:arr(state.players).length,
       winners:!!state.winners,
-      community:state.community?.length||0,
-      bets:JSON.stringify(state.bets||{})
+      commLen:arr(state.community).length,
+      bets:JSON.stringify(obj(state.bets))
     });
     if(h===lastHash)return;
     lastHash=h;
@@ -362,7 +368,7 @@ function showWaitingRoom(state){
 }
 
 function renderLobbyPlayers(state){
-  const players=state.players||[];
+  const players=arr(state.players);
   document.getElementById('p-count').textContent=players.length;
   document.getElementById('p-max').textContent=state.maxPlayers;
   const list=document.getElementById('player-list');
@@ -396,21 +402,20 @@ function copyLink(){
   });
 }
 
-// ── GAME ──
 async function startGame(){
   const state=await tableGet();
-  if(!state||state.players.length<2)return;
+  if(!state||arr(state.players).length<2)return;
   await dealHand(state);
 }
 
 async function dealHand(state){
-  const active=state.players.filter(p=>p.chips>0);
+  const players=arr(state.players);
+  const active=players.filter(p=>p.chips>0);
   if(active.length<2){await tableRef.update({phase:'gameover'});return;}
 
   const handNum=(state.handNum||0)+1;
   const deck=shuffle(buildDeck());
 
-  // Advance dealer
   let dealerSeat=state.dealerSeat||0;
   if(handNum>1){
     const seats=active.map(p=>p.seat).sort((a,b)=>a-b);
@@ -418,28 +423,25 @@ async function dealHand(state){
     dealerSeat=hi.length?hi[0]:seats[0];
   }
 
-  // Find SB and BB
-  const activeSeatsSorted=active.map(p=>p.seat).sort((a,b)=>a-b);
+  const activeSorted=active.map(p=>p.seat).sort((a,b)=>a-b);
   function nextFrom(from){
-    const hi=activeSeatsSorted.filter(s=>s>from);
-    return hi.length?hi[0]:activeSeatsSorted[0];
+    const hi=activeSorted.filter(s=>s>from);
+    return hi.length?hi[0]:activeSorted[0];
   }
   const sbSeat=nextFrom(dealerSeat);
   const bbSeat=nextFrom(sbSeat);
   const firstToAct=active.length===2?sbSeat:nextFrom(bbSeat);
 
-  // Deal hole cards
   const deckCopy=[...deck];
   const holeCards={};
   active.forEach(p=>{holeCards[p.id]=[deckCopy.pop(),deckCopy.pop()];});
 
-  // Post blinds
-  const sbP=state.players.find(p=>p.seat===sbSeat);
-  const bbP=state.players.find(p=>p.seat===bbSeat);
+  const sbP=players.find(p=>p.seat===sbSeat);
+  const bbP=players.find(p=>p.seat===bbSeat);
   const sbAmt=Math.min(state.sb,sbP.chips);
   const bbAmt=Math.min(state.bb,bbP.chips);
 
-  const players=state.players.map(p=>{
+  const newPlayers=players.map(p=>{
     if(p.id===sbP.id)return{...p,chips:p.chips-sbAmt};
     if(p.id===bbP.id)return{...p,chips:p.chips-bbAmt};
     return p;
@@ -449,10 +451,7 @@ async function dealHand(state){
   const allIn={};
   if(sbP.chips-sbAmt===0)allIn[sbP.id]=true;
   if(bbP.chips-bbAmt===0)allIn[bbP.id]=true;
-
-  // actedThisRound tracks who has acted since the last raise
-  // BB is considered to have "acted" only if no raise comes (they get option)
-  const actedThisRound={[sbP.id]:true}; // SB has acted by posting
+  const actedThisRound={[sbP.id]:true};
 
   const newState={
     ...state,
@@ -466,125 +465,138 @@ async function dealHand(state){
     currentBet:bbAmt,
     lastAgressor:bbP.id,
     actedThisRound,
-    players,winners:null,
+    players:newPlayers,winners:null,
     log:[`--- Hand #${handNum} ---`,`${sbP.name} posts SB $${sbAmt}`,`${bbP.name} posts BB $${bbAmt}`]
   };
   await tableRef.set(newState);
 }
 
-// ── ACTIONS ──
 async function doAction(act,amount){
   if(actionLock)return;
   actionLock=true;
   try{
     const state=await tableGet();
-    if(!state){actionLock=false;return;}
+    if(!state){return;}
 
-    // Verify it's my turn
-    const curPlayer=state.players.find(p=>p.seat===state.currentSeat);
-    if(!curPlayer||curPlayer.id!==myId){actionLock=false;return;}
+    const players=arr(state.players);
+    const curPlayer=players.find(p=>p.seat===state.currentSeat);
+    if(!curPlayer||curPlayer.id!==myId){return;}
 
     const myPlayer=curPlayer;
-    const myContrib=state.roundBets?.[myId]||0;
+    const roundBets=obj(state.roundBets);
+    const bets=obj(state.bets);
+    const allIn=obj(state.allIn);
+    const folded=obj(state.folded);
+    const actedThisRound=obj(state.actedThisRound);
+
+    const myContrib=roundBets[myId]||0;
     const callAmt=Math.max(0,(state.currentBet||0)-myContrib);
 
-    let players=[...state.players];
+    let newPlayers=[...players];
     let pot=state.pot||0;
-    let bets={...(state.bets||{})};
-    let roundBets={...(state.roundBets||{})};
-    let allIn={...(state.allIn||{})};
-    let folded={...(state.folded||{})};
+    let newBets={...bets};
+    let newRoundBets={...roundBets};
+    let newAllIn={...allIn};
+    let newFolded={...folded};
     let currentBet=state.currentBet||0;
     let lastAgressor=state.lastAgressor||null;
-    let actedThisRound={...(state.actedThisRound||{})};
-    let log=[...(state.log||[]).slice(-40)];
+    let newActed={...actedThisRound};
+    let log=[...arr(state.log).slice(-40)];
 
-    actedThisRound[myId]=true;
+    newActed[myId]=true;
 
     if(act==='fold'){
-      folded[myId]=true;
+      newFolded[myId]=true;
       log.push(`${myPlayer.name} folds`);
     }
     else if(act==='check'){
-      // Only valid if callAmt===0
-      if(callAmt>0){actionLock=false;return;}
+      if(callAmt>0){return;}
       log.push(`${myPlayer.name} checks`);
     }
     else if(act==='call'){
       const toCall=Math.min(callAmt,myPlayer.chips);
-      if(toCall<=0){actionLock=false;return;}
-      players=players.map(p=>p.id===myId?{...p,chips:p.chips-toCall}:p);
+      if(toCall<=0){return;}
+      newPlayers=newPlayers.map(p=>p.id===myId?{...p,chips:p.chips-toCall}:p);
       pot+=toCall;
-      bets[myId]=(bets[myId]||0)+toCall;
-      roundBets[myId]=(roundBets[myId]||0)+toCall;
-      if(myPlayer.chips-toCall===0)allIn[myId]=true;
+      newBets[myId]=(newBets[myId]||0)+toCall;
+      newRoundBets[myId]=(newRoundBets[myId]||0)+toCall;
+      if(myPlayer.chips-toCall===0)newAllIn[myId]=true;
       log.push(`${myPlayer.name} calls $${toCall}`);
     }
     else if(act==='raise'){
-      // amount = total they want to have in the pot this round
       const totalWanted=parseInt(amount);
-      const alreadyIn=roundBets[myId]||0;
+      const alreadyIn=newRoundBets[myId]||0;
       const addlNeeded=totalWanted-alreadyIn;
       const actualAdd=Math.min(addlNeeded,myPlayer.chips);
-      if(actualAdd<=0){actionLock=false;return;}
-      players=players.map(p=>p.id===myId?{...p,chips:p.chips-actualAdd}:p);
+      if(actualAdd<=0){return;}
+      newPlayers=newPlayers.map(p=>p.id===myId?{...p,chips:p.chips-actualAdd}:p);
       pot+=actualAdd;
-      bets[myId]=(bets[myId]||0)+actualAdd;
-      roundBets[myId]=alreadyIn+actualAdd;
-      currentBet=roundBets[myId];
+      newBets[myId]=(newBets[myId]||0)+actualAdd;
+      newRoundBets[myId]=alreadyIn+actualAdd;
+      currentBet=newRoundBets[myId];
       lastAgressor=myId;
-      // Reset actedThisRound — everyone else needs to act again
-      actedThisRound={[myId]:true};
-      if(myPlayer.chips-actualAdd===0)allIn[myId]=true;
-      log.push(`${myPlayer.name} raises to $${roundBets[myId]}`);
+      newActed={[myId]:true};
+      if(myPlayer.chips-actualAdd===0)newAllIn[myId]=true;
+      log.push(`${myPlayer.name} raises to $${newRoundBets[myId]}`);
     }
     else if(act==='allin'){
       const all=myPlayer.chips;
-      if(all<=0){actionLock=false;return;}
-      players=players.map(p=>p.id===myId?{...p,chips:0}:p);
+      if(all<=0){return;}
+      newPlayers=newPlayers.map(p=>p.id===myId?{...p,chips:0}:p);
       pot+=all;
-      bets[myId]=(bets[myId]||0)+all;
-      roundBets[myId]=(roundBets[myId]||0)+all;
-      if(roundBets[myId]>currentBet){
-        currentBet=roundBets[myId];
+      newBets[myId]=(newBets[myId]||0)+all;
+      newRoundBets[myId]=(newRoundBets[myId]||0)+all;
+      if(newRoundBets[myId]>currentBet){
+        currentBet=newRoundBets[myId];
         lastAgressor=myId;
-        actedThisRound={[myId]:true};
+        newActed={[myId]:true};
       }
-      allIn[myId]=true;
+      newAllIn[myId]=true;
       log.push(`${myPlayer.name} goes ALL IN for $${all}`);
     }
 
-    const newState={...state,players,pot,bets,roundBets,folded,allIn,currentBet,lastAgressor,actedThisRound,log};
+    const newState={
+      ...state,
+      players:newPlayers,pot,
+      bets:newBets,roundBets:newRoundBets,
+      folded:newFolded,allIn:newAllIn,
+      currentBet,lastAgressor,
+      actedThisRound:newActed,log
+    };
     await advanceGame(newState);
+  } catch(e){
+    console.error('Action error:',e);
   } finally {
     actionLock=false;
   }
 }
 
 async function advanceGame(state){
-  const activePlayers=state.players.filter(p=>!state.folded?.[p.id]&&state.holeCards?.[p.id]);
+  const players=arr(state.players);
+  const folded=obj(state.folded);
+  const allIn=obj(state.allIn);
+  const holeCards=obj(state.holeCards);
+  const roundBets=obj(state.roundBets);
+  const actedThisRound=obj(state.actedThisRound);
 
-  // Check if only one player left
+  const activePlayers=players.filter(p=>!folded[p.id]&&holeCards[p.id]);
+
   if(activePlayers.length===1){
     const w=activePlayers[0];
-    const players=state.players.map(p=>p.id===w.id?{...p,chips:p.chips+state.pot}:p);
-    const winners=[{id:w.id,amt:state.pot,hand:'Everyone else folded',cards:state.holeCards?.[w.id]||[]}];
-    log_push(state,'`${w.name} wins $${state.pot}`');
-    await tableRef.set({...state,players,winners,phase:'showdown'});
+    const newPlayers=players.map(p=>p.id===w.id?{...p,chips:p.chips+state.pot}:p);
+    const winners=[{id:w.id,amt:state.pot,hand:'Everyone else folded',cards:arr(holeCards[w.id])}];
+    const log=[...arr(state.log).slice(-40),`${w.name} wins $${state.pot} (everyone folded)`];
+    await tableRef.set({...state,players:newPlayers,winners,log,phase:'showdown'});
     return;
   }
 
-  // Who can still act (not folded, not all-in, has chips)
-  const canActPlayers=activePlayers.filter(p=>!state.allIn?.[p.id]&&p.chips>0);
-
-  // Check if betting round is complete
-  const roundDone=isBettingDone(state,canActPlayers);
+  const canActPlayers=activePlayers.filter(p=>!allIn[p.id]&&p.chips>0);
+  const roundDone=isBettingDone(state,canActPlayers,roundBets,actedThisRound);
 
   if(roundDone){
     await advanceStreet(state);
   } else {
-    // Find next player to act
-    const nextSeat=findNextToAct(state,canActPlayers);
+    const nextSeat=findNextToAct(state,canActPlayers,roundBets,actedThisRound);
     if(nextSeat===-1){
       await advanceStreet(state);
     } else {
@@ -593,39 +605,41 @@ async function advanceGame(state){
   }
 }
 
-function isBettingDone(state,canActPlayers){
+function isBettingDone(state,canActPlayers,roundBets,actedThisRound){
   if(canActPlayers.length===0)return true;
-  // Everyone who can act must have: acted this round AND matched the current bet
   for(const p of canActPlayers){
-    const contributed=state.roundBets?.[p.id]||0;
-    const hasActed=state.actedThisRound?.[p.id]||false;
+    const contributed=roundBets[p.id]||0;
+    const hasActed=actedThisRound[p.id]||false;
     if(!hasActed)return false;
     if(contributed<(state.currentBet||0)&&p.chips>0)return false;
   }
   return true;
 }
 
-function findNextToAct(state,canActPlayers){
+function findNextToAct(state,canActPlayers,roundBets,actedThisRound){
   if(!canActPlayers.length)return -1;
-  const seats=canActPlayers.map(p=>p.seat).sort((a,b)=>a-b);
-  const cur=state.currentSeat;
-  // Find players who haven't acted or haven't matched bet
   const needToAct=canActPlayers.filter(p=>{
-    const contributed=state.roundBets?.[p.id]||0;
-    const hasActed=state.actedThisRound?.[p.id]||false;
+    const contributed=roundBets[p.id]||0;
+    const hasActed=actedThisRound[p.id]||false;
     return !hasActed||contributed<(state.currentBet||0);
   });
   if(!needToAct.length)return -1;
   const needSeats=needToAct.map(p=>p.seat).sort((a,b)=>a-b);
-  const hi=needSeats.filter(s=>s>cur);
+  const hi=needSeats.filter(s=>s>state.currentSeat);
   return hi.length?hi[0]:needSeats[0];
 }
 
 async function advanceStreet(state){
-  const deckCopy=[...state.deck];
-  const commCopy=[...state.community];
+  const community=arr(state.community);
+  const deck=arr(state.deck);
+  const deckCopy=[...deck];
+  const commCopy=[...community];
   let phase=state.phase;
-  let log=[...(state.log||[]).slice(-40)];
+  let log=[...arr(state.log).slice(-40)];
+  const players=arr(state.players);
+  const folded=obj(state.folded);
+  const allIn=obj(state.allIn);
+  const holeCards=obj(state.holeCards);
 
   if(phase==='preflop'){
     commCopy.push(deckCopy.pop(),deckCopy.pop(),deckCopy.pop());
@@ -644,11 +658,9 @@ async function advanceStreet(state){
     return;
   }
 
-  // Reset for new street
-  const activePlayers=state.players.filter(p=>!state.folded?.[p.id]&&state.holeCards?.[p.id]);
-  const canAct=activePlayers.filter(p=>!state.allIn?.[p.id]&&p.chips>0);
+  const activePlayers=players.filter(p=>!folded[p.id]&&holeCards[p.id]);
+  const canAct=activePlayers.filter(p=>!allIn[p.id]&&p.chips>0);
 
-  // If nobody can act, run out the board
   if(canAct.length===0){
     let c=[...commCopy],d=[...deckCopy];
     while(c.length<5)c.push(d.pop());
@@ -656,7 +668,6 @@ async function advanceStreet(state){
     return;
   }
 
-  // First to act post-flop = first active player left of dealer
   const activeSorted=canAct.map(p=>p.seat).sort((a,b)=>a-b);
   const hi=activeSorted.filter(s=>s>state.dealerSeat);
   const firstSeat=hi.length?hi[0]:activeSorted[0];
@@ -669,8 +680,13 @@ async function advanceStreet(state){
 }
 
 async function doShowdown(state){
-  const active=state.players.filter(p=>!state.folded?.[p.id]&&state.holeCards?.[p.id]);
-  const hands=active.map(p=>({p,h:bestHand(state.holeCards[p.id],state.community)}))
+  const players=arr(state.players);
+  const folded=obj(state.folded);
+  const holeCards=obj(state.holeCards);
+  const community=arr(state.community);
+
+  const active=players.filter(p=>!folded[p.id]&&holeCards[p.id]);
+  const hands=active.map(p=>({p,h:bestHand(arr(holeCards[p.id]),community)}))
     .sort((a,b)=>-cmpHands(a.h,b.h));
   const best=hands[0].h;
   const winners=hands.filter(x=>cmpHands(x.h,best)===0);
@@ -678,20 +694,17 @@ async function doShowdown(state){
   const remainder=state.pot-(share*winners.length);
   const winnerData=winners.map((x,i)=>({
     id:x.p.id,amt:share+(i===0?remainder:0),
-    hand:x.h.name,cards:state.holeCards[x.p.id]||[]
+    hand:x.h.name,cards:arr(holeCards[x.p.id])
   }));
-  let players=[...state.players];
-  winnerData.forEach(w=>{players=players.map(p=>p.id===w.id?{...p,chips:p.chips+w.amt}:p);});
-  const log=[...(state.log||[]).slice(-40),
+  let newPlayers=[...players];
+  winnerData.forEach(w=>{newPlayers=newPlayers.map(p=>p.id===w.id?{...p,chips:p.chips+w.amt}:p);});
+  const log=[...arr(state.log).slice(-40),
     ...hands.map(x=>`${x.p.name}: ${x.h.name}`),
-    ...winnerData.map(w=>`${players.find(p=>p.id===w.id)?.name} wins $${w.amt}`)
+    ...winnerData.map(w=>`${newPlayers.find(p=>p.id===w.id)?.name} wins $${w.amt}`)
   ];
-  await tableRef.set({...state,phase:'showdown',players,winners:winnerData,log});
+  await tableRef.set({...state,phase:'showdown',players:newPlayers,winners:winnerData,log});
 }
 
-function log_push(state,msg){state.log=[...(state.log||[]).slice(-40),msg];}
-
-// ── RENDER ──
 const PHASE_NAMES={preflop:'Pre-Flop',flop:'Flop',turn:'Turn',river:'River',showdown:'Showdown',gameover:'Game Over'};
 
 function cardHTML(c,lg){
@@ -701,50 +714,59 @@ function cardHTML(c,lg){
 function backCard(){return`<div class="card back"></div>`;}
 
 function renderGame(state){
+  const community=arr(state.community);
+  const players=arr(state.players);
+
   document.getElementById('phase-pill').textContent=PHASE_NAMES[state.phase]||'';
   document.getElementById('tb-pot').textContent='$'+(state.pot||0).toLocaleString();
   document.getElementById('pot-badge').textContent='Pot: $'+(state.pot||0).toLocaleString();
   document.getElementById('phase-lbl').textContent=PHASE_NAMES[state.phase]||'';
   document.getElementById('hand-num').textContent=state.handNum||1;
-  const me=state.players?.find(p=>p.id===myId);
+  const me=players.find(p=>p.id===myId);
   document.getElementById('my-chips').textContent=me?'$'+me.chips.toLocaleString():'';
 
   const comm=document.getElementById('community');
   comm.innerHTML='';
-  for(let i=0;i<5;i++)comm.innerHTML+=state.community?.[i]?cardHTML(state.community[i]):'<div class="card empty"></div>';
+  for(let i=0;i<5;i++)comm.innerHTML+=community[i]?cardHTML(community[i]):'<div class="card empty"></div>';
 
-  renderSeats(state);
-  renderAction(state);
+  renderSeats(state,players,community);
+  renderAction(state,players,me);
   renderLog(state);
 
   const wa=document.getElementById('winner-area');
-  if(state.phase==='showdown'&&state.winners?.length){
-    renderWinner(state);
+  if(state.phase==='showdown'&&state.winners){
+    renderWinner(state,players,community);
   } else if(state.phase==='gameover'){
-    const winner=state.players?.find(p=>p.chips>0);
+    const winner=players.find(p=>p.chips>0);
     wa.innerHTML=`<div class="winner-box"><h2>Game Over!</h2><p style="color:var(--gold-l);margin:12px 0">${winner?.name||'Someone'} wins!</p><div class="next-btns"><button class="btn btn-gold" onclick="leaveTable()" style="width:auto">New Game</button></div></div>`;
   } else {
     wa.innerHTML='';
   }
 }
 
-function renderSeats(state){
+function renderSeats(state,players,community){
+  const folded=obj(state.folded);
+  const allIn=obj(state.allIn);
+  const holeCards=obj(state.holeCards);
+  const roundBets=obj(state.roundBets);
+  const winners=state.winners?arr(state.winners):[];
   const cont=document.getElementById('seats');
   cont.innerHTML='';
-  (state.players||[]).forEach((p,idx)=>{
+
+  players.forEach((p,idx)=>{
     const pos=SEAT_POS[idx%8];
     const isActive=state.currentSeat===p.seat&&['preflop','flop','turn','river'].includes(state.phase);
-    const isFolded=state.folded?.[p.id];
-    const isWinner=state.winners?.find(w=>w.id===p.id);
+    const isFolded=folded[p.id];
+    const isWinner=winners.find(w=>w.id===p.id);
     const isDealer=state.dealerSeat===p.seat;
     const isSB=state.sbSeat===p.seat;
     const isBB=state.bbSeat===p.seat&&!isSB;
     const isMe=p.id===myId;
-    const bet=state.roundBets?.[p.id];
-    const hole=state.holeCards?.[p.id];
+    const bet=roundBets[p.id];
+    const hole=arr(holeCards[p.id]);
 
     let cardsHTML='';
-    if(hole&&!isFolded){
+    if(hole.length&&!isFolded){
       const show=isMe||state.phase==='showdown';
       if(show){
         cardsHTML=`<div class="scards">${hole.map(c=>`<div class="card ${isRed(c.s)?'red':'blk'}" style="width:24px;height:34px;border-radius:3px"><span class="cr" style="font-size:0.52rem;top:1px;left:3px">${c.r}</span><span class="cs" style="font-size:0.68rem">${c.s}</span></div>`).join('')}</div>`;
@@ -765,34 +787,37 @@ function renderSeats(state){
     <div class="sname" style="color:${isMe?'var(--gold-l)':'var(--txt)'}">${p.name}${isMe?' (you)':''}</div>
     <div class="schips">$${p.chips.toLocaleString()}</div>
     ${bet&&bet>0?`<div class="sbet">$${bet}</div>`:''}
-    ${state.allIn?.[p.id]?'<div class="allin-tag">ALL IN</div>':''}
+    ${allIn[p.id]?'<div class="allin-tag">ALL IN</div>':''}
     ${isFolded?'<div class="fold-tag">FOLDED</div>':''}`;
     cont.appendChild(div);
   });
 }
 
-function renderAction(state){
-  const me=state.players?.find(p=>p.id===myId);
+function renderAction(state,players,me){
+  const folded=obj(state.folded);
+  const allIn=obj(state.allIn);
+  const holeCards=obj(state.holeCards);
+  const roundBets=obj(state.roundBets);
   const holeRow=document.getElementById('hole-row');
   const turnInfo=document.getElementById('turn-info');
   const btns=document.getElementById('action-btns');
-  const hole=me&&state.holeCards?.[myId];
+  const hole=arr(holeCards[myId]);
   const phases=['preflop','flop','turn','river'];
 
-  if(hole&&phases.includes(state.phase)&&!state.folded?.[myId]){
+  if(hole.length&&phases.includes(state.phase)&&!folded[myId]){
     holeRow.innerHTML=`<span class="hole-lbl">Your cards:</span>${hole.map(c=>cardHTML(c,true)).join('')}`;
   } else holeRow.innerHTML='';
 
-  const curPlayer=state.players?.find(p=>p.seat===state.currentSeat);
+  const curPlayer=players.find(p=>p.seat===state.currentSeat);
   const isMyTurn=curPlayer?.id===myId;
-  const canAct=isMyTurn&&!state.folded?.[myId]&&!state.allIn?.[myId]&&phases.includes(state.phase);
+  const canAct=isMyTurn&&!folded[myId]&&!allIn[myId]&&phases.includes(state.phase);
 
   if(!canAct){
     if(curPlayer&&phases.includes(state.phase)){
       turnInfo.innerHTML=`<span class="waiting-lbl pulse">Waiting for <strong>${curPlayer.name}</strong>...</span>`;
-    } else if(state.folded?.[myId]){
+    } else if(folded[myId]){
       turnInfo.innerHTML=`<span style="color:#ff9999">You folded</span>`;
-    } else if(state.allIn?.[myId]){
+    } else if(allIn[myId]){
       turnInfo.innerHTML=`<span style="color:#ffaaff">You're all in!</span>`;
     } else turnInfo.innerHTML='';
     btns.innerHTML='';
@@ -802,47 +827,44 @@ function renderAction(state){
 
   if(!me){btns.innerHTML='';return;}
 
-  const myContrib=state.roundBets?.[myId]||0;
+  const myContrib=roundBets[myId]||0;
   const callAmt=Math.max(0,(state.currentBet||0)-myContrib);
   const canCheck=callAmt===0;
   const toCall=Math.min(callAmt,me.chips);
-
-  // Min raise = current bet + last raise size (simplified: current bet * 2, min bb)
-  const minRaiseTotal=Math.max((state.currentBet||0)+(state.bb||20), (state.currentBet||0)*2);
-  const maxBetTotal=me.chips+myContrib; // total they could have in pot
+  const minRaiseTotal=Math.max((state.currentBet||0)+(state.bb||20),(state.currentBet||0)*2);
+  const maxBetTotal=me.chips+myContrib;
 
   turnInfo.innerHTML=`<strong>Your turn</strong> — $${me.chips.toLocaleString()}${callAmt>0?` — call: $${toCall}`:''}`;
 
   let html=`<button class="btn btn-sm btn-fold" onclick="doAction('fold')">Fold</button>`;
-
   if(canCheck){
     html+=`<button class="btn btn-sm btn-check" onclick="doAction('check')">Check</button>`;
   } else {
     html+=`<button class="btn btn-sm btn-call" onclick="doAction('call')">Call $${toCall}</button>`;
   }
-
   if(me.chips>toCall){
     const label=(state.currentBet||0)>0?'Raise':'Bet';
-    html+=`<button class="btn btn-sm btn-bet" onclick="showRaise(${minRaiseTotal},${maxBetTotal})">${label} ↑</button>`;
+    html+=`<button class="btn btn-sm btn-bet" onclick="showRaise(${minRaiseTotal},${maxBetTotal})">${label} &uarr;</button>`;
   }
-
   html+=`<button class="btn btn-sm btn-allin" onclick="doAction('allin')">All In ($${me.chips})</button>`;
   btns.innerHTML=html;
 }
 
-function renderWinner(state){
-  const w=state.winners[0];
-  const p=state.players?.find(x=>x.id===w.id);
+function renderWinner(state,players,community){
+  const winners=arr(state.winners);
+  if(!winners.length)return;
+  const w=winners[0];
+  const p=players.find(x=>x.id===w.id);
   const isMe=w.id===myId;
-  const allWinnerNames=state.winners.map(w2=>state.players?.find(x=>x.id===w2.id)?.name).join(' & ');
+  const allNames=winners.map(w2=>players.find(x=>x.id===w2.id)?.name).join(' & ');
   document.getElementById('winner-area').innerHTML=`<div class="winner-box">
-    <h2>${isMe?'You win!':allWinnerNames+' wins!'}</h2>
+    <h2>${isMe?'You win!':allNames+' wins!'}</h2>
     <div class="hand-lbl">${w.hand}</div>
     <div class="win-amt">+ $${w.amt.toLocaleString()}</div>
-    <div class="win-cards">${(w.cards||[]).map(c=>cardHTML(c,true)).join('')}</div>
-    ${state.community?.length?`<div style="font-size:0.72rem;color:var(--muted);margin-bottom:12px">Board: ${state.community.map(c=>c.r+c.s).join(' ')}</div>`:''}
+    <div class="win-cards">${arr(w.cards).map(c=>cardHTML(c,true)).join('')}</div>
+    ${community.length?`<div style="font-size:0.72rem;color:var(--muted);margin-bottom:12px">Board: ${community.map(c=>c.r+c.s).join(' ')}</div>`:''}
     <div class="next-btns">
-      ${isHost?`<button class="btn btn-gold" onclick="nextHand()" style="width:auto">Next Hand →</button>`:'<span style="color:var(--muted);font-size:0.85rem">Waiting for host to deal next hand...</span>'}
+      ${isHost?`<button class="btn btn-gold" onclick="nextHand()" style="width:auto">Next Hand &rarr;</button>`:'<span style="color:var(--muted);font-size:0.85rem">Waiting for host...</span>'}
       <button class="btn btn-ghost" onclick="leaveTable()" style="width:auto">Leave</button>
     </div>
   </div>`;
@@ -851,16 +873,14 @@ function renderWinner(state){
 async function nextHand(){
   const state=await tableGet();
   if(!state)return;
-  // Remove broke players
-  const withChips=state.players.filter(p=>p.chips>0);
-  if(withChips.length<2){await tableRef.update({phase:'gameover'});return;}
-  const newState={...state,players:withChips};
-  await dealHand(newState);
+  const players=arr(state.players).filter(p=>p.chips>0);
+  if(players.length<2){await tableRef.update({phase:'gameover'});return;}
+  await dealHand({...state,players});
 }
 
 function renderLog(state){
   const panel=document.getElementById('log-panel');
-  panel.innerHTML=(state.log||[]).slice(-12).map(l=>{
+  panel.innerHTML=arr(state.log).slice(-12).map(l=>{
     const cls=l.includes('wins')?'win':l.startsWith('---')?'hi':'';
     return`<div class="log-line ${cls}">${l}</div>`;
   }).join('');
